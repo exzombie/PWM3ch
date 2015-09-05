@@ -2,14 +2,24 @@
 #include <util/delay.h>
 #include <avr/interrupt.h>
 
-static const FastAnyPin unconnectedPins[] = {4, 5, 6, 7, 9, 10};
+static const FastAnyPin unconnectedPins[] = {4, 5};
 
-static const FastPin<3> green;
-static const FastPin<2> red;
-static const FastPin<1> blue;
+// PWM pins.
+static const FastPin<8> red;
+static const FastPin<9> green;
+static const FastPin<6> blue;
 
-static const FastPin<0> potentiometer; // ADC0 analog input.
-static const FastPin<8> button;
+// Analog pins.
+static const FastPin<0> lumPot;
+static const FastPin<1> redPot;
+static const FastPin<2> greenPot;
+static const FastPin<3> bluePot; // TODO: set to 3
+static const FastAnyPin analogPins[] = {
+    lumPot, redPot, greenPot, bluePot
+};
+
+static const FastPin<7> colorBtn;
+static const FastPin<10> settingSw;
 
 using byte = uint8_t;
 
@@ -27,6 +37,27 @@ static byte currentColor = 0;
 // The current color, dimmed by the potentiometer.
 static Color currentColorValue = {0, 0, 0};
 
+// Normal mode: measure lumPot to adjust brighness, check buttons to
+// change colors or enter setting mode.
+static void normalLoop();
+
+// Setting mode: measure all pots to adjust both color and brightness,
+// save to eeprom.
+static void setColorLoop();
+
+// Set the ADC to free-running mode so that we can take a reading
+// anytime without waiting.
+// ADC0 is used so do not set MUX bits.
+static void freerunADC0()
+{
+    DIDR0 = _BV(ADC0D); // Disable digital input on ADC0 pin.
+    ADCSRA = _BV(ADPS0) | _BV(ADPS1) |_BV(ADPS2); // Max prescaling.
+    ADCSRA |= _BV(ADATE); // Auto trigger.
+    ADCSRA |= _BV(ADEN); // Enable ADC.
+    ADCSRA |= _BV(ADSC); // Start converting.
+    ADCSRB |= _BV(ADLAR); // Left-adjust the result for 8-bit read.
+}
+
 int main()
 {
     // Setup pins.
@@ -34,22 +65,16 @@ int main()
 	pin.input();
 	pin.high();
     }
+    for (auto& pin: analogPins) {
+	pin.input();
+	pin.low();
+    }
     for_pin([](auto pin) { pin.output(); pin.low(); },
 	    red, green, blue);
-    button.input();
-    button.high();
-    potentiometer.input();
-    potentiometer.low();
+    for_pin([](auto pin) { pin.input(); pin.high(); },
+	    colorBtn, settingSw);
 
-    // Set the ADC to free-running mode so that we can take a reading
-    // anytime without waiting.
-    // ADC0 is used so do not set MUX bits.
-    DIDR0 = _BV(ADC0D); // Disable digital input on ADC0 pin.
-    ADCSRA = _BV(ADPS0) | _BV(ADPS1) |_BV(ADPS2); // Max prescaling.
-    ADCSRA |= _BV(ADATE); // Auto trigger.
-    ADCSRA |= _BV(ADEN); // Enable ADC.
-    ADCSRA |= _BV(ADSC); // Start converting.
-    ADCSRB |= _BV(ADLAR); // Left-adjust the result for 8-bit read.
+    freerunADC0();
 
     // Set the timer to generate an interrupt every time it wraps. The
     // interrupt will increment the pwmCounter and toggle the LEDs.
@@ -58,6 +83,12 @@ int main()
 
     sei();
 
+    normalLoop();
+    return 0;
+}
+
+static void normalLoop()
+{
     bool buttonPrevious = false;
     while (true) {
 	_delay_ms(50);
@@ -66,7 +97,7 @@ int main()
 	    currentColorValue[i] =
 		(colors[currentColor][i] * brightness) / 256;
 	}
-	bool buttonPressed = ! button.get();
+	bool buttonPressed = ! colorBtn.get();
 	if (buttonPressed && buttonPrevious) {
 	    currentColor = (currentColor + 1) % nColors;
 	    buttonPrevious = false;
@@ -74,7 +105,6 @@ int main()
 	    buttonPrevious = buttonPressed;
 	}
     }
-    return 0;
 }
 
 static byte pwmCounter = 0;
