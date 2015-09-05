@@ -2,6 +2,11 @@
 #include <util/delay.h>
 #include <avr/interrupt.h>
 
+using byte = uint8_t;
+
+static const byte debounceMs = 50;
+static const byte nColors = 3;
+
 static const FastAnyPin unconnectedPins[] = {4, 5};
 
 // PWM pins.
@@ -13,7 +18,7 @@ static const FastPin<6> blue;
 static const FastPin<0> lumPot;
 static const FastPin<1> redPot;
 static const FastPin<2> greenPot;
-static const FastPin<3> bluePot; // TODO: set to 3
+static const FastPin<3> bluePot;
 static const FastAnyPin analogPins[] = {
     lumPot, redPot, greenPot, bluePot
 };
@@ -21,11 +26,8 @@ static const FastAnyPin analogPins[] = {
 static const FastPin<7> colorBtn;
 static const FastPin<10> settingSw;
 
-using byte = uint8_t;
-
 // Define the table of colors, which are RGB triplets.
 using Color = byte[3];
-static const byte nColors = 3;
 static Color colors[nColors] = {
     {255, 255, 255},
     {128, 255, 64},
@@ -45,17 +47,14 @@ static void normalLoop();
 // save to eeprom.
 static void setColorLoop();
 
-// Set the ADC to free-running mode so that we can take a reading
-// anytime without waiting.
-// ADC0 is used so do not set MUX bits.
-static void freerunADC0()
+static inline byte analogRead(byte pin)
 {
-    DIDR0 = _BV(ADC0D); // Disable digital input on ADC0 pin.
-    ADCSRA = _BV(ADPS0) | _BV(ADPS1) |_BV(ADPS2); // Max prescaling.
-    ADCSRA |= _BV(ADATE); // Auto trigger.
-    ADCSRA |= _BV(ADEN); // Enable ADC.
-    ADCSRA |= _BV(ADSC); // Start converting.
-    ADCSRB |= _BV(ADLAR); // Left-adjust the result for 8-bit read.
+    if (pin > 3)
+	return 0;
+    ADMUX = pin; // Select the pin.
+    FAST_SET(ADCSRA, ADSC); // Start converting.
+    while (FAST_GET(ADCSRA, ADSC)); // Wait for completion.
+    return ADCH;
 }
 
 int main()
@@ -74,7 +73,11 @@ int main()
     for_pin([](auto pin) { pin.input(); pin.high(); },
 	    colorBtn, settingSw);
 
-    freerunADC0();
+    // Disable digital input on analog pins.
+    DIDR0 = _BV(ADC0D) | _BV(ADC1D) | _BV(ADC2D) | _BV(ADC3D);
+    ADCSRA = _BV(ADPS2); // Prescaling 16x.
+    ADCSRB |= _BV(ADLAR); // Left-adjust the result for 8-bit read.
+    ADCSRA |= _BV(ADEN) | _BV(ADSC); // Enable and initialize the ADC.
 
     // Set the timer to generate an interrupt every time it wraps. The
     // interrupt will increment the pwmCounter and toggle the LEDs.
@@ -90,19 +93,41 @@ int main()
 static void normalLoop()
 {
     bool buttonPrevious = false;
+    bool switchPrevious = false;
     while (true) {
-	_delay_ms(50);
-	byte brightness = ADCH;
+	_delay_ms(debounceMs);
+	byte brightness = analogRead(lumPot);
 	for (byte i = 0; i < 3; ++i) {
 	    currentColorValue[i] =
 		(colors[currentColor][i] * brightness) / 256;
 	}
 	bool buttonPressed = ! colorBtn.get();
+	bool switchClosed  = ! settingSw.get();
 	if (buttonPressed && buttonPrevious) {
 	    currentColor = (currentColor + 1) % nColors;
 	    buttonPrevious = false;
 	} else {
 	    buttonPrevious = buttonPressed;
+	    if (switchClosed && switchPrevious) {
+		setColorLoop();
+	    } else {
+		switchPrevious = switchClosed;
+	    }
+	}
+    }
+}
+
+static void setColorLoop()
+{
+    while (! settingSw.get()) {
+	_delay_ms(debounceMs);
+	byte i = 0;
+	for_pin([&i](auto pin) { currentColorValue[i++] = analogRead(pin); },
+		redPot, greenPot, bluePot);
+	byte brightness = analogRead(lumPot);
+	for (byte i = 0; i < 3; ++i) {
+	    currentColorValue[i] =
+		(currentColorValue[i] * brightness) / 256;
 	}
     }
 }
