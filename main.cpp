@@ -3,9 +3,10 @@
 #include <avr/interrupt.h>
 
 using byte = uint8_t;
+using Color = byte[3];
 
-static const byte debounceMs = 50;
-static const byte nColors = 3;
+static const byte debounceMs = 50; // Loop delay.
+static const byte nColors = 5;  // The number of color presets.
 
 static const FastAnyPin unconnectedPins[] = {4, 5};
 
@@ -26,18 +27,44 @@ static const FastAnyPin analogPins[] = {
 static const FastPin<7> colorBtn;
 static const FastPin<10> settingSw;
 
-// Define the table of colors, which are RGB triplets.
-using Color = byte[3];
-static Color colors[nColors] = {
-    {255, 255, 255},
-    {128, 255, 64},
-    {16, 64, 196}
-};
-
-// The current color as a choice in the table.
+// The current color as a choice in the EEPROM-stored table.
 static byte currentColor = 0;
 // The current color, dimmed by the potentiometer.
 static Color currentColorValue = {0, 0, 0};
+// The current color, undimmed.
+static Color currentColorRaw = {0, 0, 0};
+
+static void setBrightness(byte brightness)
+{
+    for (byte i = 0; i < 3; ++i) {
+	currentColorValue[i] =
+	    (currentColorRaw[i] * brightness) / 256;
+    }
+}
+
+// Color table access.
+static void readColor()
+{
+    EEAR = 3 * currentColor;
+    for (byte i = 0; i < 3; ++i) {
+	FAST_SET(EECR, EERE);
+	currentColorRaw[i] = EEDR;
+	++EEAR;
+    }
+}
+
+static void writeColor()
+{
+    EECR = 0;
+    EEAR = 3 * currentColor;
+    for (byte i = 0; i < 3; ++i) {
+	EEDR = currentColorRaw[i];
+	FAST_SET(EECR, EEMPE);
+	FAST_SET(EECR, EEPE);
+	while (FAST_GET(EECR, EEPE));
+	++EEAR;
+    }
+}
 
 // Normal mode: measure lumPot to adjust brighness, check buttons to
 // change colors or enter setting mode.
@@ -86,30 +113,37 @@ int main()
 
     sei();
 
+    readColor();
     normalLoop();
     return 0;
 }
 
 static void normalLoop()
 {
+    // Debounce variables.
     bool buttonPrevious = false;
     bool switchPrevious = false;
+
     while (true) {
 	_delay_ms(debounceMs);
+	// Use the current color preset dimmed to the required brightness.
 	byte brightness = analogRead(lumPot);
-	for (byte i = 0; i < 3; ++i) {
-	    currentColorValue[i] =
-		(colors[currentColor][i] * brightness) / 256;
-	}
+	setBrightness(brightness);
+
+	// Read the button and switch and debounce.
 	bool buttonPressed = ! colorBtn.get();
 	bool switchClosed  = ! settingSw.get();
 	if (buttonPressed && buttonPrevious) {
+	    // Cycle the color preset.
 	    currentColor = (currentColor + 1) % nColors;
+	    readColor();
 	    buttonPrevious = false;
 	} else {
 	    buttonPrevious = buttonPressed;
 	    if (switchClosed && switchPrevious) {
+		// Enter the color setting loop.
 		setColorLoop();
+		readColor();
 	    } else {
 		switchPrevious = switchClosed;
 	    }
@@ -119,15 +153,27 @@ static void normalLoop()
 
 static void setColorLoop()
 {
+    bool buttonPrevious = false; // Debounce.
     while (! settingSw.get()) {
 	_delay_ms(debounceMs);
+	// Same as the main loop, except the current color is read from pots.
 	byte i = 0;
-	for_pin([&i](auto pin) { currentColorValue[i++] = analogRead(pin); },
+	for_pin([&i](auto pin) { currentColorRaw[i++] = analogRead(pin); },
 		redPot, greenPot, bluePot);
 	byte brightness = analogRead(lumPot);
-	for (byte i = 0; i < 3; ++i) {
-	    currentColorValue[i] =
-		(currentColorValue[i] * brightness) / 256;
+	setBrightness(brightness);
+
+	// If the button is pressed, overwrite the current color preset.
+	bool buttonPressed = ! colorBtn.get();
+	if (buttonPressed && buttonPrevious) {
+	    writeColor();
+	    // Blink write confirmation;
+	    for (byte i = 0; i < 5; ++i) {
+		_delay_ms(300);
+		setBrightness((i%2) * 255);
+	    }
+	} else {
+	    buttonPrevious = buttonPressed;
 	}
     }
 }
