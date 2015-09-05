@@ -26,11 +26,13 @@ $(PRG).elf: $(OBJ)
 # You should not have to change anything below here.
 
 CXX            = avr-g++
+CC             = avr-gcc
 
 # Override is only needed by avr-lib build system.
 
+override CFLAGS        = --std=gnu11 $(OPTIMIZE) -mmcu=$(MCU_TARGET) $(DEFS)
 override CXXFLAGS      = --std=gnu++14 -fno-rtti -fno-exceptions -g -Wall $(OPTIMIZE) -mmcu=$(MCU_TARGET) $(DEFS)
-override LDFLAGS       = $(CXXFLAGS) -Wl,-Map,$(PRG).map
+override LDFLAGS       = $(OPTIMIZE) -Wl,-Map,$(PRG).map
 
 OBJCOPY        = avr-objcopy
 OBJDUMP        = avr-objdump
@@ -49,7 +51,7 @@ fuses: $(PRG).hex
 	$(AVRDUDE) -U hfuse:w:$(HFUSE):m -U lfuse:w:$(LFUSE):m -U efuse:w:$(EFUSE):m
 
 clean:
-	rm -rf *.o $(PRG).elf *.eps *.png *.pdf *.bak 
+	rm -rf $(OBJ) $(PRG).elf *.eps *.png *.pdf *.bak
 	rm -rf *.lst *.map $(EXTRA_CLEAN_FILES)
 
 %.lst: %.elf
